@@ -1,0 +1,41 @@
+1.	Project overview 
+This project is a single agentic AI assistant built on a local language model (qwen2.5:3b via Ollama) that simulates two retail roles:
+•	Personal Shopper: Personal Shopper — recommends fashion gowns based on multi-constraint filters (size, price, style, sale status, stock availability).
+•	Customer Support: Customer Support — evaluates return and exchange requests by reasoning over real order data and a structured policy document.
+All reasoning is grounded in three data sources loaded at startup: a product inventory CSV, an orders CSV, and a plain-text return policy file. No external APIs or integrations are used.
+
+2. Architecture
+2.1 High-Level Design
+The system follows a strict separation between data retrieval and reasoning:
+•	Tools only retrieve or compute — they do not reason or generate text.
+•	The LLM only reasons — it never directly accesses files or data frames.
+•	Return decisions are computed deterministically in Python code, not by the LLM, to prevent policy misinterpretation.
+This separation is the core anti-hallucination design. The LLM cannot invent product details or return outcomes because it never sees raw data — only structured, pre-filtered summaries.
+3. How Tools Are Selected
+Tool selection is driven entirely by the model using OpenAI-compatible function calling (tool_choice=auto). The system prompt provides explicit examples that teach the model when each tool applies:
+•	A shopping query with style words → search_products with extracted tags.
+•	A mention of a specific product code → get_product.
+•	Any return or exchange request with an order ID → evaluate_return (always called first, before any reasoning).
+•	An order ID mentioned in a support context → get_order, followed by evaluate_return if a return is requested.
+The system prompt also contains explicit negative examples: "cheapest dress" maps to sort_by=price_asc with no tags; "clearance items" maps to sale_only=true with no style tags. This prevents the model from hallucinating tags based on query phrasing.
+
+4. Hallucination Prevention
+• Runtime Tag Validation (valid_tags): Tags are dynamically loaded directly from the CSV inventory. The model can only select from this verified list, eliminating invented or fictional style descriptors.
+• Code-Level Tag Filtering: The search_products() function automatically ignores any tags not present in the dataset before querying, preventing invalid inputs from triggering errors or fabricated results.
+• Minimal Context Exposure (slim_product/slim_order): Only essential, cleaned fields are passed to the model. Redundant or noisy CSV columns are stripped beforehand, reducing confusion and irrelevant generation.
+• Rule-Based Return Evaluation: The evaluate_return() function handles all policy logic in Python using verified order and product data. The LLM only formats and explains pre-calculated decisions, removing subjective reinterpretation.
+• Pre-Tool Scope Guards: The system prompt strictly blocks out-of-scope requests (e.g., shoes, electronics) and missing-order returns before any tool is invoked, enforcing graceful refusals instead of speculative answers.
+• Low Temperature Setting (0.1): Keeps model output highly deterministic during tool-calling, ensuring consistent parameter extraction and minimizing random or format-breaking variations.
+
+5. Model Choice & Known Tradeoffs
+5.1 Why qwen2.5:3b
+•	Better structured tool-call output than llama3.2:3b at the same 2GB disk footprint.
+•	Runs entirely on CPU — no GPU required, satisfying local hardware constraints.
+•	temperature=0.1 gives deterministic, consistent filter extraction across repeated queries.
+
+5.2 Known Limitations (3B model constraints)
+•	Multi-task messages ("return O0045 and find me a new dress") are handled partially — the model may prioritise one task.
+•	Very vague queries without an order ID occasionally produce unexpected tool calls.
+•	Tag extraction on highly ambiguous queries (e.g. "something nice") may still occasionally add unintended tags.
+
+An 8B+ model would improve reliability on all three limitations. The 3B choice is a deliberate hardware tradeoff, not a design flaw.
